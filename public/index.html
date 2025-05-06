@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket gRPC Bridge Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .panel {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 15px;
+            background-color: #f9f9f9;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        input[type="text"] {
+            padding: 8px;
+            width: 70%;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #output {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .message {
+            margin-bottom: 5px;
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .error {
+            color: red;
+        }
+        .from-server {
+            color: blue;
+        }
+        .from-client {
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket gRPC Bridge Demo</h1>
+    
+    <div class="container">
+        <div class="panel">
+            <h2>Connection</h2>
+            <button id="connectBtn">Connect</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+            <span id="status">Disconnected</span>
+        </div>
+
+        <div class="panel">
+            <h2>Unary Call (Echo)</h2>
+            <input type="text" id="echoInput" placeholder="Enter message to echo" value="Hello from browser!">
+            <button id="echoBtn" disabled>Send Echo Request</button>
+        </div>
+
+        <div class="panel">
+            <h2>Server Streaming</h2>
+            <input type="text" id="streamInput" placeholder="Enter message for server stream" value="Stream me some data!">
+            <button id="streamBtn" disabled>Start Server Stream</button>
+        </div>
+
+        <div class="panel">
+            <h2>Bidirectional Streaming</h2>
+            <input type="text" id="bidirInput" placeholder="Enter message for bidirectional stream" value="Start bidirectional communication">
+            <button id="bidirStartBtn" disabled>Start Bidirectional Stream</button>
+            <div id="bidirMessages" style="display: none;">
+                <input type="text" id="bidirMsgInput" placeholder="Message to send in stream">
+                <button id="bidirSendBtn">Send Message</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Output</h2>
+            <div id="output"></div>
+            <button id="clearBtn">Clear Output</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let bidirActive = false;
+
+        // DOM Elements
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const statusSpan = document.getElementById('status');
+        const echoBtn = document.getElementById('echoBtn');
+        const streamBtn = document.getElementById('streamBtn');
+        const bidirStartBtn = document.getElementById('bidirStartBtn');
+        const bidirSendBtn = document.getElementById('bidirSendBtn');
+        const bidirMessages = document.getElementById('bidirMessages');
+        const outputDiv = document.getElementById('output');
+        const clearBtn = document.getElementById('clearBtn');
+
+        // Connect to WebSocket server
+        connectBtn.addEventListener('click', () => {
+            connect();
+        });
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:8080');
+
+            ws.onopen = function() {
+                appendToOutput('Connected to WebSocket server', 'from-server');
+                statusSpan.textContent = 'Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                echoBtn.disabled = false;
+                streamBtn.disabled = false;
+                bidirStartBtn.disabled = false;
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    appendToOutput(`Received (${data.method}): ${data.message}`, 'from-server');
+                    
+                    if (data.method === 'bidirectionalStreamReady') {
+                        bidirActive = true;
+                        bidirMessages.style.display = 'block';
+                    }
+                } catch (e) {
+                    appendToOutput(`Error parsing message: ${e.message}`, 'error');
+                    console.error('Error parsing message:', e);
+                }
+            };
+
+            ws.onclose = function() {
+                appendToOutput('Disconnected from WebSocket server', 'error');
+                resetConnectionState();
+            };
+
+            ws.onerror = function(error) {
+                appendToOutput(`WebSocket error: ${error.message || 'Unknown error'}`, 'error');
+                console.error('WebSocket error:', error);
+                resetConnectionState();
+            };
+        }
+
+        // Disconnect from WebSocket server
+        disconnectBtn.addEventListener('click', () => {
+            if (ws) {
+                ws.close();
+                resetConnectionState();
+            }
+        });
+
+        // Reset UI state after disconnection
+        function resetConnectionState() {
+            statusSpan.textContent = 'Disconnected';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            echoBtn.disabled = true;
+            streamBtn.disabled = true;
+            bidirStartBtn.disabled = true;
+            bidirMessages.style.display = 'none';
+            bidirActive = false;
+        }
+
+        // Echo (Unary) Request
+        echoBtn.addEventListener('click', () => {
+            if (!ws) return;
+            
+            const message = document.getElementById('echoInput').value;
+            const request = {
+                method: 'echo',
+                message: message
+            };
+            
+            appendToOutput(`Sending echo request: ${message}`, 'from-client');
+            ws.send(JSON.stringify(request));
+        });
+
+        // Server Streaming Request
+        streamBtn.addEventListener('click', () => {
+            if (!ws) return;
+            
+            const message = document.getElementById('streamInput').value;
+            const request = {
+                method: 'serverStream',
+                message: message
+            };
+            
+            appendToOutput(`Starting server stream: ${message}`, 'from-client');
+            ws.send(JSON.stringify(request));
+        });
+
+        // Bidirectional Stream Start
+        bidirStartBtn.addEventListener('click', () => {
+            if (!ws) return;
+            
+            const message = document.getElementById('bidirInput').value;
+            const request = {
+                method: 'bidirectionalStream',
+                message: message
+            };
+            
+            appendToOutput(`Starting bidirectional stream: ${message}`, 'from-client');
+            ws.send(JSON.stringify(request));
+        });
+
+        // Send Message in Bidirectional Stream
+        bidirSendBtn.addEventListener('click', () => {
+            if (!ws || !bidirActive) return;
+            
+            const message = document.getElementById('bidirMsgInput').value;
+            const request = {
+                method: 'bidirectionalStream',
+                message: message
+            };
+            
+            appendToOutput(`Sending in bidirectional stream: ${message}`, 'from-client');
+            ws.send(JSON.stringify(request));
+            document.getElementById('bidirMsgInput').value = '';
+        });
+
+        // Clear output
+        clearBtn.addEventListener('click', () => {
+            outputDiv.innerHTML = '';
+        });
+
+        // Append message to output
+        function appendToOutput(message, className) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${className}`;
+            messageDiv.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            outputDiv.appendChild(messageDiv);
+            outputDiv.scrollTop = outputDiv.scrollHeight; // Auto-scroll to bottom
+        }
+
+        // Close WebSocket connection when the page unloads
+        window.addEventListener('unload', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+    </script>
+</body>
+</html>
+
